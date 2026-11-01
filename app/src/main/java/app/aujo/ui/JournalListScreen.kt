@@ -3,6 +3,11 @@ package app.aujo.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -84,22 +89,38 @@ fun JournalListScreen(
 private fun EntryCard(entry: EntryEntity, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Chip, contentColor = Ink)
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(
-                formatDate(entry.createdAt),
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = Ink
-            )
-            Text(
-                "${formatMs(entry.durationMs)} • audio note",
-                fontSize = 13.sp,
-                color = InkSoft
-            )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)
+        ) {
+            WaveformGlyph()
+            Column(Modifier.padding(start = 14.dp)) {
+                Text(
+                    formatDate(entry.createdAt),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Ink
+                )
+                Text(
+                    "${formatMs(entry.durationMs)} • audio note",
+                    fontSize = 13.sp,
+                    color = InkSoft
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun WaveformGlyph() {
+    Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(4.dp, 14.dp).background(InkSoft, RoundedCornerShape(2.dp)))
+        Box(Modifier.size(4.dp, 24.dp).background(Ink, RoundedCornerShape(2.dp)))
+        Box(Modifier.size(4.dp, 18.dp).background(InkSoft, RoundedCornerShape(2.dp)))
     }
 }
 
