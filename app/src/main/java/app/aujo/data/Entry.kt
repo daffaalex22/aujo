@@ -23,4 +23,6 @@ data class EntryEntity(
     val transcript: String? = null,
     /** M2: silence map, JSON list of [startMs, endMs] pairs. */
     val silenceJson: String? = null,
+    /** M2: loudness per 100 ms frame (0..1), JSON array — drives the waveform. */
+    val waveformJson: String? = null,
 )

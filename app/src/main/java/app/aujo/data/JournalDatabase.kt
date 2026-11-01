@@ -22,9 +22,21 @@ interface EntryDao {
 
     @Query("DELETE FROM entries WHERE id = :id")
     suspend fun delete(id: Long)
+
+    @Query("SELECT * FROM entries WHERE silenceJson IS NULL OR waveformJson IS NULL")
+    suspend fun pendingAnalysis(): List<EntryEntity>
+
+    @Query("UPDATE entries SET silenceJson = :silenceJson, waveformJson = :waveformJson WHERE id = :id")
+    suspend fun setAnalysis(id: Long, silenceJson: String?, waveformJson: String?)
 }
 
-@Database(entities = [EntryEntity::class], version = 1, exportSchema = false)
+private val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE entries ADD COLUMN waveformJson TEXT")
+    }
+}
+
+@Database(entities = [EntryEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun entryDao(): EntryDao
 
@@ -38,7 +50,10 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "aujo.db"
-                ).build().also { instance = it }
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .build()
+                    .also { instance = it }
             }
     }
 }

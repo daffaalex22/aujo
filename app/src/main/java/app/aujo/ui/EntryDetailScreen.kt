@@ -1,8 +1,5 @@
 package app.aujo.ui
 
-import android.media.AudioAttributes
-import android.media.MediaPlayer
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,8 +19,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -32,23 +29,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.delay
+import app.aujo.audio.SilenceAnalyzer
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,52 +52,23 @@ fun EntryDetailScreen(
     onBack: () -> Unit
 ) {
     val entry by vm.observeEntry(entryId).collectAsState(initial = null)
-    val current = entry
-
-    var player by remember { mutableStateOf<MediaPlayer?>(null) }
-    var playing by remember { mutableStateOf(false) }
-    var positionSec by remember { mutableIntStateOf(0) }
-    var dragging by remember { mutableStateOf(false) }
-    var dragSec by remember { mutableFloatStateOf(0f) }
+    val playing by vm.playing.collectAsState()
+    val positionSec by vm.positionSec.collectAsState()
+    val skipSilence by vm.skipSilence.collectAsState()
     var confirmDelete by remember { mutableStateOf(false) }
 
-    // (Re)create the player whenever the entry's file changes.
-    LaunchedEffect(current?.filePath) {
-        val e = current ?: return@LaunchedEffect
-        player?.release()
-        val p = MediaPlayer().apply {
-            setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build()
-            )
-            setDataSource(e.filePath)
-            prepare()
-            setOnCompletionListener {
-                playing = false
-                positionSec = 0
-            }
-        }
-        playing = false
-        positionSec = 0
-        player = p
-    }
-
-    // Position ticker while playing.
-    LaunchedEffect(playing) {
-        while (playing) {
-            delay(200)
-            player?.let { if (!dragging) positionSec = it.currentPosition / 1000 }
+    val current = entry
+    var loadedId by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(current?.id, current?.silenceJson) {
+        if (current != null && loadedId != current.id) {
+            vm.openEntry(current)
+            loadedId = current.id
+        } else if (current != null && current.silenceJson != null) {
+            vm.openEntry(current) // refreshes the silence map, no-op otherwise
         }
     }
-
-    // Release on leaving the screen.
-    DisposableEffect(Unit) {
-        onDispose {
-            try { player?.release() } catch (_: Exception) {}
-            player = null
-        }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { vm.closePlayer() }
     }
 
     Scaffold(
@@ -132,8 +97,7 @@ fun EntryDetailScreen(
             return@Scaffold
         }
 
-        val e = current
-        val durationSec = (e.durationMs.coerceAtLeast(0)) / 1000
+        val e = current!!
 
         Column(
             Modifier
@@ -142,40 +106,82 @@ fun EntryDetailScreen(
                 .padding(horizontal = 24.dp)
         ) {
             Spacer(Modifier.height(24.dp))
-            Text(formatDate(e.createdAt), fontSize = 18.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, color = Ink)
+            Text(formatDate(e.createdAt), fontSize = 18.sp, fontWeight = FontWeight.SemiBold, color = Ink)
             Text("${formatMs(e.durationMs)} • audio note", fontSize = 13.sp, color = InkSoft)
 
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(28.dp))
 
-            // Seek bar in seconds.
-            Slider(
-                value = when {
-                    dragging -> dragSec
-                    durationSec > 0 -> positionSec.toFloat()
-                    else -> 0f
-                },
-                onValueChange = {
-                    dragging = true
-                    dragSec = it
-                    if (durationSec > 0) positionSec = it.toInt()
-                },
-                onValueChangeFinished = {
-                    dragging = false
-                    player?.seekTo((dragSec.toInt()) * 1000)
-                },
-                valueRange = 0f..durationSec.coerceAtLeast(1).toFloat(),
-                colors = SliderDefaults.colors(
-                    thumbColor = RecordRed,
-                    activeTrackColor = RecordRed,
-                    inactiveTrackColor = Chip
+            // Waveform + skip behavior. While analysis runs, show a static bar.
+            val levels = SilenceAnalyzer.decodeLevels(e.waveformJson)
+            val silences = SilenceAnalyzer.decodeSilences(e.silenceJson)
+            val positionMs = (positionSec.toLong() * 1000).coerceAtMost(e.durationMs)
+
+            if (levels.isEmpty()) {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(72.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(ChipSoft),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        if (e.silenceJson == null) "Analyzing audio…" else "Waveform unavailable",
+                        fontSize = 13.sp, color = InkSoft
+                    )
+                }
+            } else {
+                WaveformSeek(
+                    levels = levels,
+                    silences = silences,
+                    durationMs = e.durationMs,
+                    positionMs = positionMs,
+                    onSeek = { ms -> vm.seekToSec((ms / 1000).toInt()) }
                 )
-            )
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(formatMs(if (dragging) (dragSec.toLong() * 1000) else positionSec.toLong() * 1000), fontSize = 12.sp, color = InkSoft, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
-                Text(formatMs(e.durationMs), fontSize = 12.sp, color = InkSoft, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
             }
 
-            Spacer(Modifier.height(24.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    formatMs(positionMs),
+                    fontSize = 12.sp, color = InkSoft, fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    formatMs(e.durationMs),
+                    fontSize = 12.sp, color = InkSoft, fontFamily = FontFamily.Monospace
+                )
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // Skip-silence toggle.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(
+                    checked = skipSilence,
+                    onCheckedChange = { vm.setSkipSilence(it) },
+                    colors = SwitchDefaults.colors(
+                        checkedTrackColor = RecordRed,
+                        checkedThumbColor = Ink,
+                        uncheckedTrackColor = Chip,
+                        uncheckedThumbColor = InkSoft
+                    )
+                )
+                Spacer(Modifier.size(8.dp))
+                Column {
+                    Text("Skip silence", fontSize = 14.sp, color = Ink)
+                    Text(
+                        if (silences.isEmpty() && e.silenceJson != null) "No silence detected"
+                        else if (silences.isNotEmpty()) "${silences.size} quiet stretch${if (silences.size == 1) "" else "es"} — playback jumps over them"
+                        else "One-time analysis in progress",
+                        fontSize = 11.sp, color = InkSoft
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
 
             // Play / pause.
             Box(
@@ -183,27 +189,14 @@ fun EntryDetailScreen(
                     .size(76.dp)
                     .clip(CircleShape)
                     .background(RecordRed)
-                    .clickable {
-                        val p = player ?: return@clickable
-                        if (playing) {
-                            p.pause()
-                            playing = false
-                        } else {
-                            p.start()
-                            playing = true
-                        }
-                    },
+                    .clickable { vm.togglePlay() },
                 contentAlignment = Alignment.Center
             ) {
                 if (playing) PauseGlyph() else PlayGlyph()
             }
 
-            Spacer(Modifier.height(16.dp))
-            Text(
-                if (playing) "Playing…" else "Tap play to listen",
-                fontSize = 13.sp,
-                color = InkSoft
-            )
+            Spacer(Modifier.height(12.dp))
+            Text(if (playing) "Playing…" else "Tap play to listen", fontSize = 13.sp, color = InkSoft)
 
             Spacer(Modifier.weight(1f))
 
@@ -216,7 +209,7 @@ fun EntryDetailScreen(
                     .padding(16.dp)
             ) {
                 Column {
-                    Text("Transcript", fontSize = 14.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold, color = InkSoft)
+                    Text("Transcript", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = InkSoft)
                     Text("Coming in M3 — on-device speech transcription.", fontSize = 13.sp, color = InkSoft)
                 }
             }
@@ -246,10 +239,10 @@ fun EntryDetailScreen(
 
 @Composable
 private fun PlayGlyph() {
-    Canvas(Modifier.size(30.dp)) {
+    androidx.compose.foundation.Canvas(Modifier.size(30.dp)) {
         val w = size.width
         val h = size.height
-        val path = Path().apply {
+        val path = androidx.compose.ui.graphics.Path().apply {
             moveTo(w * 0.15f, 0f)
             lineTo(w * 0.95f, h * 0.5f)
             lineTo(w * 0.15f, h)
