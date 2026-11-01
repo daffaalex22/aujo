@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.Aujo" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+</resources>
