@@ -25,4 +25,6 @@ data class EntryEntity(
     val silenceJson: String? = null,
     /** M2: loudness per 100 ms frame (0..1), JSON array — drives the waveform. */
     val waveformJson: String? = null,
+    /** Version of the analyzer that produced the current map. 0 = legacy. */
+    val analysisVersion: Int = 0,
 )

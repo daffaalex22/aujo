@@ -23,11 +23,11 @@ interface EntryDao {
     @Query("DELETE FROM entries WHERE id = :id")
     suspend fun delete(id: Long)
 
-    @Query("SELECT * FROM entries WHERE silenceJson IS NULL OR waveformJson IS NULL")
-    suspend fun pendingAnalysis(): List<EntryEntity>
+    @Query("SELECT * FROM entries WHERE silenceJson IS NULL OR waveformJson IS NULL OR IFNULL(analysisVersion, 0) < :analyzerVersion")
+    suspend fun pendingAnalysis(analyzerVersion: Int): List<EntryEntity>
 
-    @Query("UPDATE entries SET silenceJson = :silenceJson, waveformJson = :waveformJson WHERE id = :id")
-    suspend fun setAnalysis(id: Long, silenceJson: String?, waveformJson: String?)
+    @Query("UPDATE entries SET silenceJson = :silenceJson, waveformJson = :waveformJson, analysisVersion = :analyzerVersion WHERE id = :id")
+    suspend fun setAnalysis(id: Long, analyzerVersion: Int, silenceJson: String?, waveformJson: String?)
 }
 
 private val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
@@ -36,7 +36,13 @@ private val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
     }
 }
 
-@Database(entities = [EntryEntity::class], version = 2, exportSchema = false)
+private val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE entries ADD COLUMN analysisVersion INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
+@Database(entities = [EntryEntity::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun entryDao(): EntryDao
 
@@ -51,7 +57,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aujo.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .build()
                     .also { instance = it }
             }

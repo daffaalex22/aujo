@@ -43,10 +43,10 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     fun observeEntry(id: Long) = dao.observeById(id)
 
     init {
-        // M2: analyze any entry that predates the analyzer (or raced it).
+        // Re-analyze entries whose maps predate the current analyzer version.
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                dao.pendingAnalysis().forEach { analyzeAndStore(it) }
+                dao.pendingAnalysis(SilenceAnalyzer.ANALYSIS_VERSION).forEach { analyzeAndStore(it) }
             }
         }
     }
@@ -129,6 +129,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             val result = SilenceAnalyzer.analyze(File(entry.filePath))
             dao.setAnalysis(
                 entry.id,
+                SilenceAnalyzer.ANALYSIS_VERSION,
                 SilenceAnalyzer.encodeSilences(result.silences),
                 SilenceAnalyzer.encodeLevels(result.levels)
             )
