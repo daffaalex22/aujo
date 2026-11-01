@@ -43,6 +43,100 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.aujo.audio.SilenceAnalyzer
+import app.aujo.audio.WhisperModelManager
+import app.aujo.data.EntryEntity
+import app.aujo.data.TranscriptState
+import kotlinx.coroutines.delay
+
+@Composable
+private fun DetailTranscriptBody(e: EntryEntity, vm: JournalViewModel) {
+    var expanded by remember { mutableStateOf(false) }
+    val modelState by vm.whisperModelState.collectAsState()
+    val transcribingEntryId by vm.transcribingEntryId.collectAsState()
+    val text = e.transcript?.trim().orEmpty()
+
+    when {
+        // Final transcript on screen (either source).
+        text.isNotBlank() -> {
+            Text(
+                text,
+                fontSize = 14.sp, color = Ink, lineHeight = 20.sp,
+                maxLines = if (expanded) Int.MAX_VALUE else 5,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.clickable { expanded = !expanded }
+            )
+            Spacer(Modifier.height(4.dp))
+            val caption = when (e.transcriptSource) {
+                "live" -> "captured live while recording"
+                "whisper" -> "transcribed on this phone — offline"
+                else -> null
+            }
+            if (caption != null) {
+                Text(caption, fontSize = 10.sp, color = Ok)
+            }
+            TextButton(
+                onClick = { if (transcribingEntryId == null) vm.retryTranscribe(e) },
+                enabled = transcribingEntryId == null
+            ) {
+                Text("Transcribe again", fontSize = 12.sp, color = InkSoft)
+            }
+        }
+        e.transcriptState == TranscriptState.QUEUED ->
+            Text("In queue — transcriptions run one at a time…", fontSize = 13.sp, color = InkSoft)
+        e.transcriptState == TranscriptState.RUNNING || transcribingEntryId == e.id ->
+            RunningGlyph("Transcribing offline… this can take a while")
+        e.transcriptState == TranscriptState.FAILED -> {
+            Text(
+                e.transcriptError ?: "Transcription failed",
+                fontSize = 13.sp, color = RecordRed, lineHeight = 18.sp
+            )
+            TextButton(onClick = { if (transcribingEntryId == null) vm.retryTranscribe(e) }) {
+                Text("Retry", fontSize = 13.sp, color = Ink)
+            }
+        }
+        else -> when (modelState.status) {
+            WhisperModelManager.Status.READY ->
+                TextButton(
+                    onClick = { if (transcribingEntryId == null) vm.retryTranscribe(e) },
+                    enabled = transcribingEntryId == null
+                ) { Text("Transcribe this entry", fontSize = 13.sp, color = RecordRed) }
+            WhisperModelManager.Status.DOWNLOADING -> {
+                Text(
+                    "Downloading model… ${(modelState.downloadedFraction * 100).toInt()}% of 31 MB",
+                    fontSize = 13.sp, color = InkSoft
+                )
+            }
+            WhisperModelManager.Status.ERROR -> {
+                Text("Model download failed: ${modelState.message}", fontSize = 13.sp, color = RecordRed)
+                TextButton(onClick = { vm.downloadWhisperModel() }) {
+                    Text("Try again", fontSize = 13.sp, color = Ink)
+                }
+            }
+            WhisperModelManager.Status.NOT_DOWNLOADED -> {
+                Text(
+                    "Transcribe with a 31 MB one-time download of an offline model (English + Bahasa). " +
+                        "It runs entirely on this phone — your audio never leaves it. " +
+                        "The model is stored in app-private storage.",
+                    fontSize = 13.sp, color = InkSoft, lineHeight = 18.sp
+                )
+                TextButton(onClick = { vm.downloadWhisperModel() }) {
+                    Text("Download model", fontSize = 13.sp, color = RecordRed)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RunningGlyph(label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        var ticks by remember { mutableStateOf(0) }
+        LaunchedEffect(Unit) {
+            while (true) { delay(400); ticks = (ticks + 1) % 4 }
+        }
+        Text(label.plus(".".repeat(ticks)), fontSize = 13.sp, color = InkSoft)
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -200,7 +294,9 @@ fun EntryDetailScreen(
 
             Spacer(Modifier.weight(1f))
 
-            // Transcript (live entries carry it; older ones can be filled by M5).
+            // Transcript (filled live by the built-in engine where it works,
+            // or by the on-device Whisper model after saving).
+
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -211,32 +307,7 @@ fun EntryDetailScreen(
                 Column {
                     Text("Transcript", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = InkSoft)
                     Spacer(Modifier.height(6.dp))
-                    var expanded by remember { mutableStateOf(false) }
-                    val note by vm.transcribeNote.collectAsState()
-                    val text = e.transcript?.trim().orEmpty()
-                    if (text.isBlank()) {
-                        Text(
-                            "No transcript captured. The speech engine on this phone either can't run while the recorder holds the mic, or ignores saved audio files — so no transcript will be attempted for now.",
-                            fontSize = 13.sp, color = InkSoft, lineHeight = 18.sp
-                        )
-                        Text(
-                            "Your audio is safe. Built-in Whisper transcription (M5) can fill this gap later, fully offline.",
-                            fontSize = 13.sp, color = InkSoft, lineHeight = 18.sp
-                        )
-                        if (note.isNotBlank()) {
-                            Spacer(Modifier.height(6.dp))
-                            Text(note, fontSize = 11.sp, color = Ok, lineHeight = 15.sp)
-                        }
-                    } else {
-                        Text(
-                            text,
-                            fontSize = 14.sp, color = Ink, lineHeight = 20.sp,
-                            maxLines = if (expanded) Int.MAX_VALUE else 5,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .clickable { expanded = !expanded }
-                        )
-                    }
+                    DetailTranscriptBody(e, vm)
                 }
             }
             Spacer(Modifier.height(24.dp))

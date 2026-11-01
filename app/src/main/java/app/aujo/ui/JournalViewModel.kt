@@ -10,10 +10,14 @@ import app.aujo.audio.AudioRecorder
 import app.aujo.audio.SilenceAnalyzer
 import app.aujo.audio.Transcriber
 import app.aujo.audio.TranscriberStatus
+import app.aujo.audio.WhisperEngine
+import app.aujo.audio.WhisperModelManager
 import app.aujo.data.AppDatabase
 import app.aujo.data.EntryEntity
+import app.aujo.data.TranscriptState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -37,6 +41,8 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     private val dao = AppDatabase.get(app).entryDao()
     private val recorder = AudioRecorder()
     private val transcriber = Transcriber(app)
+    private val modelManager = WhisperModelManager(app)
+    private var whisperEngine: WhisperEngine? = null
     private val prefs = app.getSharedPreferences("aujo", android.content.Context.MODE_PRIVATE)
 
     // ---- Journal list / persistence ---------------------------------------
@@ -46,11 +52,25 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
 
     fun observeEntry(id: Long) = dao.observeById(id)
 
+    data class TranscribeRequest(val entryId: Long, val force: Boolean)
+
+    /** Single background consumer: transcriptions run one at a time. */
+    private val transcribeQueue = Channel<TranscribeRequest>(Channel.UNLIMITED)
+
     init {
         // Re-analyze entries whose maps predate the current analyzer version.
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 dao.pendingAnalysis(SilenceAnalyzer.ANALYSIS_VERSION).forEach { analyzeAndStore(it) }
+            }
+        }
+        // A previous process could have died mid-transcription; mark those
+        // honestly failed so the user can retry manually.
+        viewModelScope.launch(Dispatchers.IO) { dao.failStaleTranscripts() }
+        // Serial (not parallel) so long entries don't stack CPU load.
+        viewModelScope.launch(Dispatchers.Default) {
+            for (req in transcribeQueue) {
+                runWhisperJob(req)
             }
         }
     }
@@ -78,6 +98,98 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Latest transcription-engine outcome surfaced for diagnostics. */
     val transcribeNote: StateFlow<String> = transcriber.note
+
+    // ---- Whisper model + background queue (M3) -----------------------------
+
+    val whisperModelState: StateFlow<WhisperModelManager.ModelState> = modelManager.state
+
+    /** Entry id currently being transcribed, if any. */
+    private val _transcribingEntryId = MutableStateFlow<Long?>(null)
+    val transcribingEntryId: StateFlow<Long?> = _transcribingEntryId.asStateFlow()
+
+    fun downloadWhisperModel() {
+        viewModelScope.launch { modelManager.download() }
+    }
+
+    fun removeWhisperModel() {
+        whisperEngine?.close()
+        whisperEngine = null
+        modelManager.delete()
+    }
+
+    fun isWhisperModelReady(): Boolean = modelManager.isReady()
+
+    private suspend fun engineReady(): WhisperEngine? {
+        whisperEngine?.let { engine -> if (engine.load()) return engine }
+        val file = WhisperModelManager.modelFile(getApplication())
+        if (!file.exists()) return null
+        return try {
+            WhisperEngine(file).also { engine ->
+                if (!engine.load()) {
+                    engine.close()
+                    return null
+                }
+                whisperEngine = engine
+            }
+        } catch (e: Exception) {
+            Log.w("Aujo", "whisper engine init failed", e)
+            null
+        }
+    }
+
+    /** Queues an entry for offline transcription (after save / manual retry). */
+    fun requestWhisperTranscribe(entry: EntryEntity) {
+        viewModelScope.launch(Dispatchers.IO) { enqueueTranscribe(entry.id) }
+    }
+
+    private suspend fun enqueueTranscribe(id: Long, force: Boolean = false) {
+        val a = dao.byId(id) ?: return
+        if (a.transcriptState == 1 || a.transcriptState == 2) return
+        if (!force && !a.transcript.isNullOrBlank()) return
+        dao.setTranscriptState(id, TranscriptState.QUEUED, null)
+        transcribeQueue.send(TranscribeRequest(id, force))
+    }
+
+    /** One queued transcription job: model-in → transcript-out, never the mic. */
+    private suspend fun runWhisperJob(req: TranscribeRequest) {
+        val id = req.entryId
+        val app = getApplication<Application>()
+        try {
+            val entry = dao.byId(id)
+            if (entry == null || (!req.force && !entry.transcript.isNullOrBlank())) return
+            if (!modelManager.isReady()) {
+                dao.setTranscriptState(id, TranscriptState.FAILED, "Model is not downloaded yet")
+                return
+            }
+            dao.setTranscriptState(id, TranscriptState.RUNNING, null)
+            _transcribingEntryId.value = id
+            val engine = engineReady()
+            if (engine == null) {
+                dao.setTranscriptState(id, TranscriptState.FAILED, "Model failed to load")
+                return
+            }
+            val lang = when (entry.language.ifBlank { "auto" }.take(2).lowercase()) {
+                "en" -> "en"
+                "id" -> "id"
+                else -> "auto"
+            }
+            val text = withContext(Dispatchers.IO) {
+                engine.transcribe(File(entry.filePath), lang)
+            }
+            when {
+                text == null ->
+                    dao.setTranscriptState(id, TranscriptState.FAILED, "Transcription engine failed")
+                text.isBlank() ->
+                    dao.setTranscriptState(id, TranscriptState.FAILED, "No speech recognized (recording may be silent)")
+                else -> dao.setTranscript(id, text.trim(), "whisper", TranscriptState.DONE, null)
+            }
+        } catch (e: Exception) {
+            Log.w("Aujo", "whisper job failed", e)
+            try { dao.setTranscriptState(id, TranscriptState.FAILED, e.message ?: "transcription failed") } catch (_: Exception) {}
+        } finally {
+            _transcribingEntryId.value = null
+        }
+    }
 
     private val _activeLang = MutableStateFlow(loadLangPref())
     val activeLang: StateFlow<String> = _activeLang.asStateFlow()
@@ -144,24 +256,15 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             val id = dao.insert(entry)
             analyzeAndStore(entry.copy(id = id))
 
-            // Transcript: flush live text (or fall back to file transcription).
-            val lang = _activeLang.value
-            val savedPath = file.absolutePath
+            // Transcript: live engine's text if it produced any, otherwise the
+            // saved file goes through the offline Whisper queue.
             viewModelScope.launch(Dispatchers.Main) {
                 transcriber.stop { liveText ->
                     viewModelScope.launch(Dispatchers.IO) {
                         if (liveText.isNotBlank()) {
-                            dao.updateTranscript(id, liveText)
+                            dao.setTranscript(id, liveText, "live", TranscriptState.DONE, null)
                         } else {
-                            // Live engine couldn't keep up (mic contention etc.):
-                            // inject the saved file into the recognizer as a fallback.
-                            transcriber.transcribeFile(savedPath, lang) { fileText ->
-                                viewModelScope.launch(Dispatchers.IO) {
-                                    if (!fileText.isNullOrBlank()) {
-                                        dao.updateTranscript(id, fileText)
-                                    }
-                                }
-                            }
+                            enqueueTranscribe(id)
                         }
                     }
                 }
@@ -179,16 +282,17 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Re-runs saved-audio transcription for an entry (manual retry). */
+    /** Re-runs offline transcription for an entry (manual "Transcribe"/retry). */
     fun retryTranscribe(entry: EntryEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            transcriber.transcribeFile(entry.filePath, entry.language.ifBlank { _activeLang.value }) { text ->
-                if (!text.isNullOrBlank()) {
-                    viewModelScope.launch(Dispatchers.IO) {
-                        dao.updateTranscript(entry.id, text)
-                    }
-                }
+            val missingModel = !modelManager.isReady()
+            if (missingModel) {
+                dao.setTranscriptState(
+                    entry.id, TranscriptState.FAILED, "Model is not downloaded yet"
+                )
+                return@launch
             }
+            enqueueTranscribe(entry.id, force = true)
         }
     }
 

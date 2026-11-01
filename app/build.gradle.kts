@@ -9,12 +9,37 @@ android {
     namespace = "app.aujo"
     compileSdk = 36
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.31.1"
+        }
+    }
+
     defaultConfig {
         applicationId = "app.aujo"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            // User's phone (and virtually all modern Androids): 64-bit ARM.
+            abiFilters.add("arm64-v8a")
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-O2")
+                arguments += listOf(
+                    "-DANDROID_STL=c++_static",
+                    // keep the vendored build lean
+                    "-DWHISPER_BUILD_IS_DEV=OFF",
+                    "-DWHISPER_BUILD_TESTS=OFF",
+                    "-DWHISPER_BUILD_EXAMPLES=OFF",
+                    "-DWHISPER_BUILD_SERVER=OFF",
+                )
+            }
+        }
     }
 
     buildTypes {
@@ -37,6 +62,8 @@ android {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
         }
     }
+
+    ndkVersion = "28.2.13676358"
 
     buildFeatures {
         compose = true

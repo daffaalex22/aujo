@@ -137,11 +137,7 @@ class Transcriber(private val context: Context) {
         stopRequested = true
         runOnMain {
             try { recognizer?.stopListening() } catch (_: Exception) {}
-            var t = 0
-            while (t < 1200) {
-                delay(100); t += 100
-                // settle: give the last final result a moment to arrive
-            }
+            delay(900) // settle: give the last final result a moment to arrive
             recognizer?.destroy()
             recognizer = null
             _status.value = TranscriberStatus.IDLE

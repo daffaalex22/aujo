@@ -2,6 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Used only for the one-time opt-in download of the offline Whisper
+         model (~31 MB). Audio recordings never use the network. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Read-only network status to warn when the model download would run
+         over mobile data. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
         android:label="@string/app_name"

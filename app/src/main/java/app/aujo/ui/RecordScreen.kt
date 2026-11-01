@@ -180,7 +180,7 @@ private fun TranscribePanel(committed: String, partial: String, isRecording: Boo
     Box(Modifier.fillMaxSize()) {
         if (committed.isBlank() && partial.isBlank()) {
             Text(
-                if (isRecording) "Say something — your words appear here…" else "Your transcript appears here while you record.",
+                if (isRecording) "Say something — your words appear here…" else "Transcript builds after you stop — offline, on this phone.",
                 fontSize = 13.sp,
                 color = InkSoft,
                 modifier = Modifier
@@ -206,8 +206,8 @@ private fun TranscribePanel(committed: String, partial: String, isRecording: Boo
 
 private fun statusLine(status: TranscriberStatus, isRecording: Boolean): String = when {
     !isRecording -> ""
-    status == TranscriberStatus.UNAVAILABLE -> "Speech engine unavailable on this device"
-    status == TranscriberStatus.FAILURE -> "Live engine blocked by recorder — transcript will run after saving"
+    status == TranscriberStatus.UNAVAILABLE -> "Built-in engine unavailable — offline transcription runs after saving"
+    status == TranscriberStatus.FAILURE -> "Live engine blocked by the recorder — offline transcription runs after saving"
     status == TranscriberStatus.STARTING -> "Starting speech engine…"
     status == TranscriberStatus.RESTARTING -> "Listening…"
     else -> "Listening (on-device)…"
