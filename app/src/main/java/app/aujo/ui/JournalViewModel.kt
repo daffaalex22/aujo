@@ -8,6 +8,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.aujo.audio.AudioRecorder
 import app.aujo.audio.SilenceAnalyzer
+import app.aujo.audio.Transcriber
+import app.aujo.audio.TranscriberStatus
 import app.aujo.data.AppDatabase
 import app.aujo.data.EntryEntity
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +36,8 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
 
     private val dao = AppDatabase.get(app).entryDao()
     private val recorder = AudioRecorder()
+    private val transcriber = Transcriber(app)
+    private val prefs = app.getSharedPreferences("aujo", android.content.Context.MODE_PRIVATE)
 
     // ---- Journal list / persistence ---------------------------------------
 
@@ -62,10 +66,35 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     /** Live loudness for the record screen's meter. */
     val level: StateFlow<Float> = recorder.level
 
+    // ---- Transcription state (M3) ------------------------------------------
+
+    /** Text finalized so far in the current recording. */
+    val transcriptText: StateFlow<String> = transcriber.committed
+
+    /** Phrase currently being spoken (not final yet). */
+    val transcriptPartial: StateFlow<String> = transcriber.partial
+
+    val transcriberStatus: StateFlow<TranscriberStatus> = transcriber.status
+
+    /** Latest transcription-engine outcome surfaced for diagnostics. */
+    val transcribeNote: StateFlow<String> = transcriber.note
+
+    private val _activeLang = MutableStateFlow(loadLangPref())
+    val activeLang: StateFlow<String> = _activeLang.asStateFlow()
+
+    fun setLanguage(lang: String) {
+        _activeLang.value = lang
+        prefs.edit().putString("recordingLang", lang).apply()
+    }
+
+    private fun loadLangPref(): String =
+        prefs.getString("recordingLang", "en-US") ?: "en-US"
+
     private var pendingFile: File? = null
 
     fun startRecording() {
         if (_isRecording.value) return
+        val lang = _activeLang.value
         viewModelScope.launch(Dispatchers.IO) {
             val file = newRecordingFile()
             val ok = recorder.start(file)
@@ -73,6 +102,8 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
                 pendingFile = file
                 _startedAt.value = System.currentTimeMillis()
                 _isRecording.value = true
+                // Live transcription runs beside the recorder if the engine allows.
+                transcriber.start(lang)
             } else {
                 file.delete()
             }
@@ -107,10 +138,35 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             val entry = EntryEntity(
                 createdAt = started,
                 durationMs = duration,
-                filePath = file.absolutePath
+                filePath = file.absolutePath,
+                language = _activeLang.value
             )
             val id = dao.insert(entry)
             analyzeAndStore(entry.copy(id = id))
+
+            // Transcript: flush live text (or fall back to file transcription).
+            val lang = _activeLang.value
+            val savedPath = file.absolutePath
+            viewModelScope.launch(Dispatchers.Main) {
+                transcriber.stop { liveText ->
+                    viewModelScope.launch(Dispatchers.IO) {
+                        if (liveText.isNotBlank()) {
+                            dao.updateTranscript(id, liveText)
+                        } else {
+                            // Live engine couldn't keep up (mic contention etc.):
+                            // inject the saved file into the recognizer as a fallback.
+                            transcriber.transcribeFile(savedPath, lang) { fileText ->
+                                viewModelScope.launch(Dispatchers.IO) {
+                                    if (!fileText.isNullOrBlank()) {
+                                        dao.updateTranscript(id, fileText)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             withContext(Dispatchers.Main) { onSaved(entry.copy(id = id)) }
         }
     }
@@ -120,6 +176,19 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             if (entry.id == playheadEntryId) closePlayer()
             dao.delete(entry.id)
             File(entry.filePath).delete()
+        }
+    }
+
+    /** Re-runs saved-audio transcription for an entry (manual retry). */
+    fun retryTranscribe(entry: EntryEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            transcriber.transcribeFile(entry.filePath, entry.language.ifBlank { _activeLang.value }) { text ->
+                if (!text.isNullOrBlank()) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        dao.updateTranscript(entry.id, text)
+                    }
+                }
+            }
         }
     }
 

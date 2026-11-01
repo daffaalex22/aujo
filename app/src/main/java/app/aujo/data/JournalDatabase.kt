@@ -28,6 +28,9 @@ interface EntryDao {
 
     @Query("UPDATE entries SET silenceJson = :silenceJson, waveformJson = :waveformJson, analysisVersion = :analyzerVersion WHERE id = :id")
     suspend fun setAnalysis(id: Long, analyzerVersion: Int, silenceJson: String?, waveformJson: String?)
+
+    @Query("UPDATE entries SET transcript = :transcript WHERE id = :id")
+    suspend fun updateTranscript(id: Long, transcript: String)
 }
 
 private val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
@@ -42,7 +45,13 @@ private val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
     }
 }
 
-@Database(entities = [EntryEntity::class], version = 3, exportSchema = false)
+private val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+    override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE entries ADD COLUMN language TEXT NOT NULL DEFAULT ''")
+    }
+}
+
+@Database(entities = [EntryEntity::class], version = 4, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun entryDao(): EntryDao
 
@@ -57,7 +66,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "aujo.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { instance = it }
             }

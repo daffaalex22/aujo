@@ -27,4 +27,6 @@ data class EntryEntity(
     val waveformJson: String? = null,
     /** Version of the analyzer that produced the current map. 0 = legacy. */
     val analysisVersion: Int = 0,
+    /** M3: language code used when recording this entry, e.g. "en-US", "id-ID". */
+    val language: String = "",
 )

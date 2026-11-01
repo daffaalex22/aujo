@@ -200,7 +200,7 @@ fun EntryDetailScreen(
 
             Spacer(Modifier.weight(1f))
 
-            // Transcript placeholder until M3.
+            // Transcript (live entries carry it; older ones can be filled by M5).
             Box(
                 Modifier
                     .fillMaxWidth()
@@ -210,7 +210,33 @@ fun EntryDetailScreen(
             ) {
                 Column {
                     Text("Transcript", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = InkSoft)
-                    Text("Coming in M3 — on-device speech transcription.", fontSize = 13.sp, color = InkSoft)
+                    Spacer(Modifier.height(6.dp))
+                    var expanded by remember { mutableStateOf(false) }
+                    val note by vm.transcribeNote.collectAsState()
+                    val text = e.transcript?.trim().orEmpty()
+                    if (text.isBlank()) {
+                        Text(
+                            "No transcript for this entry. Stored audio is safe — Whisper (M5) can transcribe it later.",
+                            fontSize = 13.sp, color = InkSoft, lineHeight = 18.sp
+                        )
+                        if (note.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(note, fontSize = 11.sp, color = Ok, lineHeight = 15.sp)
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        TextButton(onClick = { vm.retryTranscribe(e) }) {
+                            Text("Try transcribing again", color = RecordRed, fontSize = 13.sp)
+                        }
+                    } else {
+                        Text(
+                            text,
+                            fontSize = 14.sp, color = Ink, lineHeight = 20.sp,
+                            maxLines = if (expanded) Int.MAX_VALUE else 5,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .clickable { expanded = !expanded }
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(24.dp))

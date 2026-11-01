@@ -110,6 +110,16 @@ private fun EntryCard(entry: EntryEntity, onClick: () -> Unit) {
                     fontSize = 13.sp,
                     color = InkSoft
                 )
+                val snippet = entry.transcript?.trim()
+                if (!snippet.isNullOrBlank()) {
+                    Text(
+                        snippet,
+                        fontSize = 12.sp,
+                        color = InkSoft,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
             }
         }
     }
