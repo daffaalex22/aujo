@@ -1,0 +1,122 @@
+package app.aujo.ui
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.aujo.data.EntryEntity
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun JournalListScreen(
+    entries: List<EntryEntity>,
+    onRecordClick: () -> Unit,
+    onEntryClick: (Long) -> Unit
+) {
+    Scaffold(
+        containerColor = Bg,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        "Aujo",
+                        color = Ink,
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 22.sp
+                    )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Bg)
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = onRecordClick,
+                containerColor = RecordRed,
+                contentColor = Ink
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = "Record a new entry")
+            }
+        }
+    ) { pad ->
+        if (entries.isEmpty()) {
+            EmptyState(pad)
+        } else {
+            LazyColumn(
+                Modifier
+                    .fillMaxSize()
+                    .padding(pad),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(entries, key = { it.id }) { entry ->
+                    EntryCard(entry) { onEntryClick(entry.id) }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EntryCard(entry: EntryEntity, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = Chip, contentColor = Ink)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                formatDate(entry.createdAt),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Ink
+            )
+            Text(
+                "${formatMs(entry.durationMs)} • audio note",
+                fontSize = 13.sp,
+                color = InkSoft
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyState(pad: PaddingValues) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(pad),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("No entries yet", color = Ink, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            "Tap + to record your first journal",
+            color = InkSoft,
+            fontSize = 14.sp
+        )
+    }
+}
