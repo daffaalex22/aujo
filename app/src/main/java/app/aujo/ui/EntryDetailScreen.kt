@@ -216,16 +216,16 @@ fun EntryDetailScreen(
                     val text = e.transcript?.trim().orEmpty()
                     if (text.isBlank()) {
                         Text(
-                            "No transcript for this entry. Stored audio is safe — Whisper (M5) can transcribe it later.",
+                            "No transcript captured. The speech engine on this phone either can't run while the recorder holds the mic, or ignores saved audio files — so no transcript will be attempted for now.",
+                            fontSize = 13.sp, color = InkSoft, lineHeight = 18.sp
+                        )
+                        Text(
+                            "Your audio is safe. Built-in Whisper transcription (M5) can fill this gap later, fully offline.",
                             fontSize = 13.sp, color = InkSoft, lineHeight = 18.sp
                         )
                         if (note.isNotBlank()) {
                             Spacer(Modifier.height(6.dp))
                             Text(note, fontSize = 11.sp, color = Ok, lineHeight = 15.sp)
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        TextButton(onClick = { vm.retryTranscribe(e) }) {
-                            Text("Try transcribing again", color = RecordRed, fontSize = 13.sp)
                         }
                     } else {
                         Text(

@@ -10,7 +10,6 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
-import androidx.core.content.FileProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -154,113 +153,19 @@ class Transcriber(private val context: Context) {
 
     /**
      * Runs recognition over a saved WAV instead of the live mic (API 31+).
-     * Tries the on-device engine first, then the generic one. [onResult]
-     * delivers the file's transcript, or null when everything failed.
-     * Progress/failure detail lands in [note].
+     *
+     * DISABLED after real-device diagnosis: this phone's speech engine does
+     * not honor EXTRA_AUDIO_INJECT_SOURCE — instead of reading the file it
+     * opened a live microphone session (evidenced by the system mic icon),
+     * i.e. it would transcribe the room, not the saved entry. Until a speech
+     * engine arrives that reads files on-device, this returns null without
+     * ever touching the microphone.
      */
     fun transcribeFile(path: String, lang: String, onResult: (String?) -> Unit) {
-        if (Build.VERSION.SDK_INT < 31) {
-            _note.value = "Saved audio needs API 31+; this device is ${Build.VERSION.SDK_INT}."
-            onResult(null)
-            return
-        }
-        _status.value = TranscriberStatus.STARTING
-        runOnMain {
-            val collected = StringBuilder()
-            val services = recognitionServicePackages()
-
-            fun attempt(onDeviceEngine: Boolean, preferOffline: Boolean, remaining: List<Pair<Boolean, Boolean>>) {
-                try {
-                    val audioUri = injectedAudioUri(path, services)
-                        ?: run {
-                            _note.value = "Couldn't make the recording readable for the speech service."
-                            onResult(null)
-                            return
-                        }
-                    val sr = if (onDeviceEngine && SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
-                        SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-                    } else {
-                        SpeechRecognizer.createSpeechRecognizer(context)
-                    }.also { r ->
-                        r.setRecognitionListener(object : RecognitionListener {
-                            override fun onResults(results: Bundle?) {
-                                firstText(results)?.let { append(collected, it) }
-                                destroyQuietly(r)
-                                _status.value = TranscriberStatus.IDLE
-                                onResult(collected.toString().ifBlank { null })
-                            }
-                            override fun onError(error: Int) {
-                                destroyQuietly(r)
-                                val engine = if (onDeviceEngine) "on-device" else "generic"
-                                if (remaining.isNotEmpty()) {
-                                    _note.value = "File pass: $engine engine error $error — trying next…"
-                                    val (a, b) = remaining.first()
-                                    attempt(a, b, remaining.drop(1))
-                                } else {
-                                    _note.value = "File pass failed: $engine engine error $error (entry audio is safe)."
-                                    _status.value = TranscriberStatus.UNAVAILABLE
-                                    onResult(collected.toString().ifBlank { null })
-                                }
-                            }
-                            override fun onReadyForSpeech(params: Bundle?) {
-                                _status.value = TranscriberStatus.LISTENING
-                                _note.value = "File pass running (${if (onDeviceEngine) "on-device" else "generic"} engine)…"
-                            }
-                            override fun onRmsChanged(rmsdB: Float) {}
-                            override fun onBufferReceived(buffer: ByteArray?) {}
-                            override fun onBeginningOfSpeech() {}
-                            override fun onEndOfSpeech() {}
-                            override fun onPartialResults(partialResults: Bundle?) {}
-                            override fun onEvent(eventType: Int, params: Bundle?) {}
-                            override fun onLanguageDetection(params: Bundle) {}
-                        })
-                    }
-                    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                        putExtra(RecognizerIntent.EXTRA_LANGUAGE, lang)
-                        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, preferOffline)
-                        putExtra(RecognizerIntent.EXTRA_AUDIO_INJECT_SOURCE, audioUri)
-                    }
-                    sr.startListening(intent)
-                } catch (e: Exception) {
-                    Log.w("Aujo", "transcribeFile attempt failed", e)
-                    if (remaining.isNotEmpty()) {
-                        val (a, b) = remaining.first()
-                        attempt(a, b, remaining.drop(1))
-                    } else {
-                        _note.value = "File pass unavailable: ${e.message ?: "unknown error"}"
-                        _status.value = TranscriberStatus.UNAVAILABLE
-                        onResult(null)
-                    }
-                }
-            }
-
-            attempt(
-                onDeviceEngine = true, preferOffline = true,
-                remaining = listOf(true to false, false to true)
-            )
-        }
+        _note.value = "This phone's speech engine ignores saved files (it opened the mic instead). Transcripts will come from the built-in engine in M5."
+        _status.value = TranscriberStatus.UNAVAILABLE
+        onResult(null)
     }
-
-    /** "audio:content://…" pointing at the recording through FileProvider,
-     *  readable by every recognition service package on the device. */
-    private fun injectedAudioUri(path: String, servicePackages: List<String>): String? = runCatching {
-        val file = File(path)
-        val contentUri = FileProvider.getUriForFile(context, "app.aujo.fileprovider", file)
-        (servicePackages + listOf("com.google.android.googlequicksearchbox")).distinct().forEach { pkg ->
-            runCatching {
-                context.grantUriPermission(pkg, contentUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-        }
-        "audio:" + contentUri.toString()
-    }.onFailure { Log.w("Aujo", "injectedAudioUri failed", it) }.getOrNull()
-
-    /** Packages hosting an ACTION_RECOGNIZE_SPEECH service (e.g. the Google app). */
-    private fun recognitionServicePackages(): List<String> = runCatching {
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-        context.packageManager.queryIntentServices(intent, 0)
-            .mapNotNull { it.serviceInfo?.packageName }
-    }.onFailure { Log.w("Aujo", "service discovery failed", it) }.getOrDefault(emptyList())
 
     // ---- internals ---------------------------------------------------------
 
@@ -280,6 +185,7 @@ class Transcriber(private val context: Context) {
             if (stopRequested) return
             errorsSinceResult++
             Log.d("Aujo", "transcription error $error (streak $errorsSinceResult)")
+            _note.value = "Live session: engine error $error ×$errorsSinceResult"
             when {
                 error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
                     recreateThen { beginSession() }

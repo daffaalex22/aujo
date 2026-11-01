@@ -125,14 +125,19 @@ fun RecordScreen(
                     partial = partial,
                     isRecording = isRecording
                 )
-                Text(
-                    statusLine(status, isRecording),
-                    fontSize = 11.sp,
-                    color = InkSoft,
+                Column(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
                         .padding(bottom = 8.dp, start = 14.dp)
-                )
+                ) {
+                    Text(statusLine(status, isRecording), fontSize = 11.sp, color = InkSoft)
+                    if (status == TranscriberStatus.FAILURE || status == TranscriberStatus.RESTARTING || status == TranscriberStatus.LISTENING) {
+                        val note by vm.transcribeNote.collectAsState()
+                        if (note.isNotBlank() && committed.isBlank() && partial.isBlank()) {
+                            Text(note, fontSize = 10.sp, color = InkSoft)
+                        }
+                    }
+                }
             }
 
             Spacer(Modifier.height(12.dp))
