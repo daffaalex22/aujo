@@ -155,6 +155,11 @@ fun RecordScreen(
                     vm.setLanguage("id-ID")
                 }
             }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (isRecording) vm.noiseCleanup.collectAsState().value else "",
+                fontSize = 10.sp, color = InkSoft
+            )
 
             Spacer(Modifier.weight(1f))
 

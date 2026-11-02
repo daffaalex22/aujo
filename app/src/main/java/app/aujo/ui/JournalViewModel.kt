@@ -86,6 +86,9 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
     /** Live loudness for the record screen's meter. */
     val level: StateFlow<Float> = recorder.level
 
+    /** Noise-cleanup method in use during recording (platform DSP status). */
+    val noiseCleanup: StateFlow<String> = recorder.noiseCleanup
+
     // ---- Transcription state (M3) ------------------------------------------
 
     /** Text finalized so far in the current recording. */

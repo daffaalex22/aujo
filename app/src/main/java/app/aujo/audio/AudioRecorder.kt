@@ -3,6 +3,8 @@ package app.aujo.audio
 import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.media.MediaRecorder
 import android.os.Process
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,9 +25,10 @@ import kotlin.math.sqrt
  * and should be stopped via [stop], which finalizes the WAV header and
  * returns the total recorded duration in milliseconds.
  *
- * This is the raw capture layer of the app. Silence *detection*
- * (M2) will observe the same level data later — it deliberately
- * does not alter what is written to disk.
+ * Noise cleanup happens inside the capture session (M3.5): the platform
+ * [NoiseSuppressor] is attached to the AudioRecord when available, so noise
+ * already the phone's DSP removed before audio reaches this class. It is
+ * therefore baked into the saved WAV as it is written.
  */
 class AudioRecorder {
 
@@ -37,11 +40,16 @@ class AudioRecorder {
     /** Loudness normalized to 0..1, updated about every 100 ms while recording. */
     val level: StateFlow<Float> get() = _level
 
+    /** Human-readable noise-cleanup method in use for the current/last recording. */
+    private val _noiseCleanup = MutableStateFlow("")
+    val noiseCleanup: StateFlow<String> get() = _noiseCleanup
+
     @Volatile private var recordThread: Thread? = null
     @Volatile private var stopRequested = false
     @Volatile private var pendingFile: RandomAccessFile? = null
     @Volatile private var framesWritten = 0L
     private var audioRecord: AudioRecord? = null
+    private var suppressor: NoiseSuppressor? = null
 
     /**
      * Starts recording into [target] (a .wav path).
@@ -57,7 +65,7 @@ class AudioRecorder {
         if (minBuf <= 0) return false
 
         val rec = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             sampleRate,
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT,
@@ -67,6 +75,8 @@ class AudioRecorder {
             rec.release()
             return false
         }
+
+        attachNoiseCleanup(rec)
 
         target.parentFile?.mkdirs()
         val file = try {
@@ -84,8 +94,36 @@ class AudioRecorder {
         stopRequested = false
         audioRecord = rec
         rec.startRecording()
+        attachNoiseCleanup(rec) // after routing starts: some stacks reject effects on idle sessions
         recordThread = thread(name = "aujo-recorder") { readLoop(rec, file) }
         return true
+    }
+
+    /**
+     * Attaches the platform speakerphone/noise effects to the capture session.
+     * These run in the vendor DSP before we ever see the samples, so the WAV
+     * written to disk is the post-suppression signal. Fail-soft: a ROM without
+     * the effect simply records raw, and the UI states that honestly.
+     */
+    private fun attachNoiseCleanup(rec: AudioRecord) {
+        suppressor?.release()
+        suppressor = null
+        var note = "noise cleanup: off (not available on this phone)"
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                val ns = NoiseSuppressor.create(rec.audioSessionId)
+                if (ns != null && ns.enabled) {
+                    suppressor = ns
+                    note = "noise cleanup: on-device DSP"
+                } else {
+                    runCatching { ns?.release() }
+                    note = "noise cleanup: rejected by this phone's audio stack"
+                }
+            }
+        } catch (e: Exception) {
+            note = "noise cleanup: failed to attach (${e.message ?: "error"})"
+        }
+        _noiseCleanup.value = note
     }
 
     private fun readLoop(rec: AudioRecord, file: RandomAccessFile) {
@@ -119,6 +157,9 @@ class AudioRecorder {
             rec.release()
         }
         audioRecord = null
+
+        suppressor?.let { s -> runCatching { s.release() } }
+        suppressor = null
 
         pendingFile?.let { file ->
             try {
