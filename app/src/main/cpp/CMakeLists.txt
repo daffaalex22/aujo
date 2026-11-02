@@ -23,6 +23,7 @@ set(GGML_NATIVE           OFF CACHE BOOL "" FORCE)
 set(GGML_BACKEND_DL       OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(third_party/whisper.cpp)
+add_subdirectory(third_party/rnnoise)
 
-add_library(aujo_whisper SHARED whisper-jni.cpp)
-target_link_libraries(aujo_whisper PRIVATE whisper log)
+add_library(aujo_whisper SHARED whisper-jni.cpp denoise-jni.cpp)
+target_link_libraries(aujo_whisper PRIVATE whisper rnnoise log)

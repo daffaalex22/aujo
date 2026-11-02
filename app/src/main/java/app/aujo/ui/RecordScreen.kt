@@ -43,6 +43,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.aujo.audio.DenoiseJni
+import app.aujo.audio.SilenceAnalyzer
 import app.aujo.audio.TranscriberStatus
 import kotlinx.coroutines.delay
 
@@ -60,6 +62,8 @@ fun RecordScreen(
     val partial by vm.transcriptPartial.collectAsState()
     val status by vm.transcriberStatus.collectAsState()
     val activeLang by vm.activeLang.collectAsState()
+    val denoiseMode by vm.denoiseMode.collectAsState()
+    val noiseCleanup by vm.noiseCleanup.collectAsState()
 
     // Ticks while recording so the timer string refreshes.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -155,9 +159,27 @@ fun RecordScreen(
                     vm.setLanguage("id-ID")
                 }
             }
+
+            // Noise-cleanup mode — the phone's DSP is always on when available;
+            // neural layer is opt-in per these modes.
+            Row(
+                horizontalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                ModePill("Off", -1, denoiseMode == -1, !isRecording) { vm.setDenoiseMode(-1) }
+                Spacer(Modifier.size(8.dp))
+                ModePill("Light", DenoiseJni.MODE_LIGHT, denoiseMode == DenoiseJni.MODE_LIGHT, !isRecording) {
+                    vm.setDenoiseMode(DenoiseJni.MODE_LIGHT)
+                }
+                Spacer(Modifier.size(8.dp))
+                ModePill("Voice only", DenoiseJni.MODE_VOICE_ONLY, denoiseMode == DenoiseJni.MODE_VOICE_ONLY, !isRecording) {
+                    vm.setDenoiseMode(DenoiseJni.MODE_VOICE_ONLY)
+                }
+            }
+
             Spacer(Modifier.height(8.dp))
             Text(
-                if (isRecording) vm.noiseCleanup.collectAsState().value else "",
+                if (isRecording) noiseCleanup else "Noise cleanup applies while you record",
                 fontSize = 10.sp, color = InkSoft
             )
 
@@ -216,6 +238,27 @@ private fun statusLine(status: TranscriberStatus, isRecording: Boolean): String 
     status == TranscriberStatus.STARTING -> "Starting speech engine…"
     status == TranscriberStatus.RESTARTING -> "Listening…"
     else -> "Listening (on-device)…"
+}
+
+@Composable
+private fun ModePill(label: String, mode: Int, active: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    // Smaller variant of the language pill: cleanup modes read as secondary options.
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (active) Chip else ChipSoft)
+            .border(if (active) 1.dp else 0.dp, InkSoft, RoundedCornerShape(50))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 5.dp)
+    ) {
+        Text(
+            label,
+            fontSize = 11.sp,
+            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (active) Ink else InkSoft,
+            modifier = Modifier.align(Alignment.Center)
+        )
+    }
 }
 
 @Composable

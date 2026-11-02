@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.aujo.audio.AudioRecorder
+import app.aujo.audio.DenoiseJni
 import app.aujo.audio.SilenceAnalyzer
 import app.aujo.audio.Transcriber
 import app.aujo.audio.TranscriberStatus
@@ -207,12 +208,25 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
 
     private var pendingFile: File? = null
 
+    // ---- Denoise mode (M3.5) ------------------------------------------------
+
+    private val _denoiseMode = MutableStateFlow(loadDenoiseMode())
+    val denoiseMode: StateFlow<Int> = _denoiseMode.asStateFlow()
+
+    fun setDenoiseMode(mode: Int) {
+        _denoiseMode.value = mode
+        prefs.edit().putInt("denoiseMode", mode).apply()
+    }
+
+    private fun loadDenoiseMode(): Int = prefs.getInt("denoiseMode", DenoiseJni.MODE_LIGHT)
+
     fun startRecording() {
         if (_isRecording.value) return
         val lang = _activeLang.value
+        val mode = _denoiseMode.value
         viewModelScope.launch(Dispatchers.IO) {
             val file = newRecordingFile()
-            val ok = recorder.start(file)
+            val ok = recorder.start(file, mode)
             if (ok) withContext(Dispatchers.Main) {
                 pendingFile = file
                 _startedAt.value = System.currentTimeMillis()
@@ -239,6 +253,7 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             val duration = recorder.stop()
             val file = pendingFile
             val started = _startedAt.value
+            val voiceFrac = recorder.voiceFraction
 
             pendingFile = null
             _isRecording.value = false
@@ -260,12 +275,19 @@ class JournalViewModel(app: Application) : AndroidViewModel(app) {
             analyzeAndStore(entry.copy(id = id))
 
             // Transcript: live engine's text if it produced any, otherwise the
-            // saved file goes through the offline Whisper queue.
+            // saved file goes through the offline Whisper queue — but skip the
+            // queue when the denoiser measured ~no voice at all: whisper on
+            // silence produces ready-made hallucinations, and honesty beats fiction.
             viewModelScope.launch(Dispatchers.Main) {
                 transcriber.stop { liveText ->
                     viewModelScope.launch(Dispatchers.IO) {
                         if (liveText.isNotBlank()) {
                             dao.setTranscript(id, liveText, "live", TranscriptState.DONE, null)
+                        } else if (voiceFrac in 0f..0.02f && duration >= 8_000) {
+                            dao.setTranscriptState(
+                                id, TranscriptState.FAILED,
+                                "No speech detected — this recording looks quiet"
+                            )
                         } else {
                             enqueueTranscribe(id)
                         }

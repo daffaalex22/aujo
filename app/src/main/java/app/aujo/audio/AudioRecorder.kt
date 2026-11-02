@@ -3,10 +3,10 @@ package app.aujo.audio
 import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
-import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.media.MediaRecorder
 import android.os.Process
+import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.io.File
@@ -40,6 +40,13 @@ class AudioRecorder {
     /** Loudness normalized to 0..1, updated about every 100 ms while recording. */
     val level: StateFlow<Float> get() = _level
 
+    /**
+     * Fraction of this recording's frames that RNNoise considered voice-shaped
+     * so far (0..1; 0 with no denoiser). Read after [stop] by the caller.
+     */
+    var voiceFraction: Float = 0f
+        private set
+
     /** Human-readable noise-cleanup method in use for the current/last recording. */
     private val _noiseCleanup = MutableStateFlow("")
     val noiseCleanup: StateFlow<String> get() = _noiseCleanup
@@ -50,13 +57,15 @@ class AudioRecorder {
     @Volatile private var framesWritten = 0L
     private var audioRecord: AudioRecord? = null
     private var suppressor: NoiseSuppressor? = null
+    private var denoiserHandle: Long = 0L
 
     /**
      * Starts recording into [target] (a .wav path).
+     * [denoiseMode]: -1 off, else one of [DenoiseJni.MODE_LIGHT] / [DenoiseJni.MODE_VOICE_ONLY].
      * Returns false if the microphone could not be initialized.
      */
     @SuppressLint("MissingPermission") // caller is responsible for RECORD_AUDIO
-    fun start(target: File): Boolean {
+    fun start(target: File, denoiseMode: Int = -1): Boolean {
         if (recordThread != null) return false
 
         val minBuf = AudioRecord.getMinBufferSize(
@@ -92,11 +101,33 @@ class AudioRecorder {
 
         framesWritten = 0
         stopRequested = false
+        voiceFraction = 0f
         audioRecord = rec
+        attachDenoiser(denoiseMode)
         rec.startRecording()
         attachNoiseCleanup(rec) // after routing starts: some stacks reject effects on idle sessions
-        recordThread = thread(name = "aujo-recorder") { readLoop(rec, file) }
+        recordThread = thread(name = "aujo-recorder") { readLoop(rec, file, denoiserHandle) }
         return true
+    }
+
+    /**
+     * Creates the native RNNoise denoiser for this recording when requested.
+     * Fail-soft: if the engine can't initialize we record DSP-cleaned (or raw)
+     * audio and say so rather than losing the capture.
+     */
+    private fun attachDenoiser(mode: Int) {
+        denoiserHandle = 0L
+        _noiseCleanup.value = ""
+        if (mode < 0) return
+        val h = DenoiseJni.nativeCreate(sampleRate, mode)
+        if (h != 0L) {
+            denoiserHandle = h
+            _noiseCleanup.value = if (mode == DenoiseJni.MODE_VOICE_ONLY) "neural cleanup: voice-only"
+            else "neural cleanup: light"
+        } else {
+            Log.w("Aujo", "native denoiser init failed; recording without neural cleanup")
+            _noiseCleanup.value = "neural cleanup: failed to start"
+        }
     }
 
     /**
@@ -108,25 +139,33 @@ class AudioRecorder {
     private fun attachNoiseCleanup(rec: AudioRecord) {
         suppressor?.release()
         suppressor = null
-        var note = "noise cleanup: off (not available on this phone)"
+        var dspNote = ""
         try {
             if (NoiseSuppressor.isAvailable()) {
                 val ns = NoiseSuppressor.create(rec.audioSessionId)
                 if (ns != null && ns.enabled) {
                     suppressor = ns
-                    note = "noise cleanup: on-device DSP"
+                    dspNote = "DSP"
                 } else {
                     runCatching { ns?.release() }
-                    note = "noise cleanup: rejected by this phone's audio stack"
+                    dspNote = ""
                 }
             }
         } catch (e: Exception) {
-            note = "noise cleanup: failed to attach (${e.message ?: "error"})"
+            Log.w("Aujo", "NoiseSuppressor attach failed", e)
+            dspNote = ""
         }
-        _noiseCleanup.value = note
+        // Combine with whatever the neural layer reported (order: neural ran first).
+        val neural = _noiseCleanup.value
+        _noiseCleanup.value = when {
+            dspNote.isNotEmpty() && neural.isNotEmpty() -> "$neural + $dspNote"
+            dspNote.isNotEmpty() -> "noise cleanup: on-device $dspNote"
+            neural.isNotEmpty() -> neural
+            else -> "noise cleanup: off (not available on this phone)"
+        }
     }
 
-    private fun readLoop(rec: AudioRecord, file: RandomAccessFile) {
+    private fun readLoop(rec: AudioRecord, file: RandomAccessFile, denoiser: Long) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
         val chunk = ShortArray(sampleRate / 10) // 100 ms of audio
         val bytes = ByteBuffer.allocate(chunk.size * 2).order(ByteOrder.LITTLE_ENDIAN)
@@ -134,13 +173,28 @@ class AudioRecorder {
         while (!stopRequested) {
             val n = rec.read(chunk, 0, chunk.size)
             if (n <= 0) continue
+
+            val processed: ShortArray = if (denoiser != 0L && n == chunk.size) {
+                runCatching { DenoiseJni.nativeProcess(denoiser, chunk) }
+                    .onFailure { Log.w("Aujo", "denoise chunk failed", it) }
+                    .getOrNull() ?: chunk // process failed: write the raw audio, honestly note it below
+            } else chunk
+
             bytes.clear()
-            for (i in 0 until n) bytes.putShort(chunk[i])
+            for (i in 0 until n) bytes.putShort(processed[i])
             file.write(bytes.array(), 0, n * 2)
             framesWritten += n
-            _level.value = normalizedLevel(chunk, n)
+            _level.value = normalizedLevel(processed, n)
         }
         _level.value = 0f
+        if (denoiser != 0L) {
+            runCatching {
+                val stats = DenoiseJni.nativeStats(denoiser)
+                if (stats[0] > 0) voiceFraction = stats[1].toFloat() / stats[0]
+            }
+        } else {
+            voiceFraction = -1f // no denoiser: unknown
+        }
     }
 
     /**
@@ -160,6 +214,11 @@ class AudioRecorder {
 
         suppressor?.let { s -> runCatching { s.release() } }
         suppressor = null
+
+        if (denoiserHandle != 0L) {
+            runCatching { DenoiseJni.nativeDestroy(denoiserHandle) }
+            denoiserHandle = 0L
+        }
 
         pendingFile?.let { file ->
             try {
